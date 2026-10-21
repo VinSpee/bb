@@ -207,6 +207,12 @@ describe("planAcpElicitation", () => {
         answers: { plan: { selected: [], freeText: "   " } },
       }),
     ).toEqual({ action: "decline" });
+    expect(
+      plan.toResponse({
+        kind: "user_answer",
+        answers: { plan: { selected: ["unknown"], freeText: "Gamma" } },
+      }),
+    ).toEqual({ action: "decline" });
   });
 
   it("folds an Other text field into a multi-select question", () => {
@@ -244,6 +250,18 @@ describe("planAcpElicitation", () => {
       action: "accept",
       content: { tags: [], tags__other: "Zeta" },
     });
+    for (const answer of [
+      { selected: [] },
+      { selected: [], freeText: "   " },
+      { selected: ["unknown"], freeText: "Zeta" },
+    ]) {
+      expect(
+        plan.toResponse({
+          kind: "user_answer",
+          answers: { tags: answer },
+        }),
+      ).toEqual({ action: "decline" });
+    }
   });
 
   it("folds an Other text field into a typed choice as one free-text question", () => {
@@ -296,6 +314,8 @@ describe("planAcpElicitation", () => {
           b__other: { type: "string" },
           c: { type: "string", enum: ["x", "y"] },
           c__other: { type: "string" },
+          d: { type: "string", enum: ["x", "y"] },
+          d__other: { type: "string" },
         }),
       ),
     );
@@ -303,6 +323,7 @@ describe("planAcpElicitation", () => {
       "a",
       "b",
       "c",
+      "d",
     ]);
   });
 

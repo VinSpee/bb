@@ -320,6 +320,12 @@ export function planAcpElicitation(params: unknown): AcpElicitationPlan {
   if (entries.length === 0) {
     return planConfirmation(message);
   }
+  if (entries.length > USER_QUESTION_MAX_QUESTIONS * 2) {
+    return {
+      kind: "unsupported",
+      reason: "the form has too many fields for bb to show",
+    };
+  }
   const fields: SourceField[] = [];
   for (const [name, fieldSchema] of entries) {
     const field = isJsonObject(fieldSchema) ? planField(fieldSchema) : null;
@@ -372,7 +378,8 @@ export function planAcpElicitation(params: unknown): AcpElicitationPlan {
           }
           continue;
         }
-        if (!decoded && !typed) {
+        const hasSelection = (answer?.selected.length ?? 0) > 0;
+        if ((!decoded && hasSelection) || (!hasSelection && !typed)) {
           return { action: "decline" };
         }
         if (decoded) {
