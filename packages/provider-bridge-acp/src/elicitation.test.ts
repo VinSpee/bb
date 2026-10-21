@@ -157,6 +157,167 @@ describe("planAcpElicitation", () => {
     ).toEqual({ action: "decline" });
   });
 
+  it("folds a choice's Other text field into the same question", () => {
+    const plan = questions(
+      planAcpElicitation(
+        form({
+          plan: {
+            type: "string",
+            oneOf: [
+              { const: "alpha", title: "Alpha" },
+              { const: "beta", title: "Beta" },
+            ],
+          },
+          plan__other: { type: "string", title: "Other" },
+        }),
+      ),
+    );
+    expect(plan.payload.questions).toMatchObject([
+      {
+        id: "plan",
+        multiSelect: false,
+        allowFreeText: true,
+        options: [{ label: "Alpha" }, { label: "Beta" }],
+      },
+    ]);
+    expect(
+      plan.toResponse({
+        kind: "user_answer",
+        answers: { plan: { selected: ["alpha"] } },
+      }),
+    ).toEqual({ action: "accept", content: { plan: "alpha" } });
+    expect(
+      plan.toResponse({
+        kind: "user_answer",
+        answers: { plan: { selected: [], freeText: "Gamma" } },
+      }),
+    ).toEqual({ action: "accept", content: { plan__other: "Gamma" } });
+    expect(
+      plan.toResponse({
+        kind: "user_answer",
+        answers: { plan: { selected: ["beta"], freeText: " Gamma " } },
+      }),
+    ).toEqual({
+      action: "accept",
+      content: { plan: "beta", plan__other: "Gamma" },
+    });
+    expect(
+      plan.toResponse({
+        kind: "user_answer",
+        answers: { plan: { selected: [], freeText: "   " } },
+      }),
+    ).toEqual({ action: "decline" });
+  });
+
+  it("folds an Other text field into a multi-select question", () => {
+    const plan = questions(
+      planAcpElicitation(
+        form({
+          tags: {
+            type: "array",
+            items: {
+              anyOf: [
+                { const: "a", title: "A" },
+                { const: "b", title: "B" },
+              ],
+            },
+          },
+          tags__other: { type: "string" },
+        }),
+      ),
+    );
+    expect(plan.payload.questions).toMatchObject([
+      { id: "tags", multiSelect: true, allowFreeText: true },
+    ]);
+    expect(
+      plan.toResponse({
+        kind: "user_answer",
+        answers: { tags: { selected: ["a", "b"] } },
+      }),
+    ).toEqual({ action: "accept", content: { tags: ["a", "b"] } });
+    expect(
+      plan.toResponse({
+        kind: "user_answer",
+        answers: { tags: { selected: [], freeText: "Zeta" } },
+      }),
+    ).toEqual({
+      action: "accept",
+      content: { tags: [], tags__other: "Zeta" },
+    });
+  });
+
+  it("folds an Other text field into a typed choice as one free-text question", () => {
+    const plan = questions(
+      planAcpElicitation(
+        form({
+          branch: {
+            type: "string",
+            oneOf: ["main", "dev", "release", "hotfix", "next"].map(
+              (value) => ({ const: value, title: value.toUpperCase() }),
+            ),
+          },
+          branch__other: { type: "string" },
+        }),
+      ),
+    );
+    expect(plan.payload.questions).toHaveLength(1);
+    expect(plan.payload.questions[0]).toMatchObject({
+      id: "branch",
+      allowFreeText: true,
+    });
+    expect(plan.payload.questions[0]?.options).toBeUndefined();
+    expect(
+      plan.toResponse({
+        kind: "user_answer",
+        answers: { branch: { selected: [], freeText: "Hotfix" } },
+      }),
+    ).toEqual({ action: "accept", content: { branch: "hotfix" } });
+    expect(
+      plan.toResponse({
+        kind: "user_answer",
+        answers: { branch: { selected: [], freeText: "staging" } },
+      }),
+    ).toEqual({ action: "accept", content: { branch__other: "staging" } });
+    expect(
+      plan.toResponse({
+        kind: "user_answer",
+        answers: { branch: { selected: [], freeText: "  " } },
+      }),
+    ).toEqual({ action: "decline" });
+  });
+
+  it("counts each choice with its Other text field as one question toward the limit", () => {
+    const plan = questions(
+      planAcpElicitation(
+        form({
+          a: { type: "string", enum: ["x", "y"] },
+          a__other: { type: "string" },
+          b: { type: "string", enum: ["x", "y"] },
+          b__other: { type: "string" },
+          c: { type: "string", enum: ["x", "y"] },
+          c__other: { type: "string" },
+        }),
+      ),
+    );
+    expect(plan.payload.questions.map((question) => question.id)).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+  });
+
+  it("keeps a text field's companion field as its own question", () => {
+    const plan = questions(
+      planAcpElicitation(
+        form({ notes: { type: "string" }, notes__other: { type: "string" } }),
+      ),
+    );
+    expect(plan.payload.questions.map((question) => question.id)).toEqual([
+      "notes",
+      "notes__other",
+    ]);
+  });
+
   it("shows a form without fields as accept or decline", () => {
     const plan = questions(planAcpElicitation(form({}, "Deploy now?")));
     expect(plan.payload.questions).toMatchObject([

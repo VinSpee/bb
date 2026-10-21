@@ -41,12 +41,14 @@ type AcpElicitationField =
 interface PlannedField {
   name: string;
   field: AcpElicitationField;
+  otherName?: string;
   question: PendingInteractionUserQuestionQuestion;
 }
 
 const CONFIRM_QUESTION_ID = "confirm";
 const CONFIRM_ACCEPT_VALUE = "accept";
 const CONFIRM_DECLINE_VALUE = "decline";
+const OTHER_FIELD_SUFFIX = "__other";
 
 function readChoices(schema: AcpJsonObject): AcpElicitationChoice[] | null {
   const titled = schema["oneOf"] ?? schema["anyOf"];
@@ -116,6 +118,7 @@ function questionFor(
   schema: AcpJsonObject,
   field: AcpElicitationField,
   message: string | undefined,
+  hasOther: boolean,
 ): PendingInteractionUserQuestionQuestion {
   const label = readString(schema, "title")?.trim() || name;
   const description = readString(schema, "description")?.trim();
@@ -141,14 +144,14 @@ function questionFor(
         ...base,
         multiSelect: false,
         options: field.choices,
-        allowFreeText: false,
+        allowFreeText: hasOther,
       };
     case "multiChoice":
       return {
         ...base,
         multiSelect: true,
         options: field.choices,
-        allowFreeText: false,
+        allowFreeText: hasOther,
       };
     case "boolean":
       return {
@@ -251,6 +254,54 @@ function planConfirmation(message: string | undefined): AcpElicitationPlan {
   };
 }
 
+interface SourceField {
+  name: string;
+  schema: AcpJsonObject;
+  field: AcpElicitationField;
+}
+
+function planQuestionFields(
+  fields: SourceField[],
+  message: string | undefined,
+): PlannedField[] {
+  const folded = new Set<string>();
+  const otherNames = new Map<string, string>();
+  for (const entry of fields) {
+    if (!entry.name.endsWith(OTHER_FIELD_SUFFIX)) {
+      continue;
+    }
+    const choiceName = entry.name.slice(0, -OTHER_FIELD_SUFFIX.length);
+    const choice = fields.find((candidate) => candidate.name === choiceName);
+    if (
+      entry.field.kind === "text" &&
+      choice &&
+      (choice.field.kind === "choice" ||
+        choice.field.kind === "multiChoice" ||
+        choice.field.kind === "typedChoice")
+    ) {
+      otherNames.set(choiceName, entry.name);
+      folded.add(entry.name);
+    }
+  }
+  return fields
+    .filter((entry) => !folded.has(entry.name))
+    .map((entry, index) => {
+      const otherName = otherNames.get(entry.name);
+      return {
+        name: entry.name,
+        field: entry.field,
+        otherName,
+        question: questionFor(
+          entry.name,
+          entry.schema,
+          entry.field,
+          index === 0 ? message : undefined,
+          otherName !== undefined,
+        ),
+      };
+    });
+}
+
 export function planAcpElicitation(params: unknown): AcpElicitationPlan {
   if (!isJsonObject(params)) {
     return { kind: "unsupported", reason: "the request was malformed" };
@@ -269,14 +320,7 @@ export function planAcpElicitation(params: unknown): AcpElicitationPlan {
   if (entries.length === 0) {
     return planConfirmation(message);
   }
-  if (entries.length > USER_QUESTION_MAX_QUESTIONS) {
-    return {
-      kind: "unsupported",
-      reason: `the form has ${entries.length} fields and bb shows at most ${USER_QUESTION_MAX_QUESTIONS}`,
-    };
-  }
-
-  const planned: PlannedField[] = [];
+  const fields: SourceField[] = [];
   for (const [name, fieldSchema] of entries) {
     const field = isJsonObject(fieldSchema) ? planField(fieldSchema) : null;
     if (name.trim() === "" || !isJsonObject(fieldSchema) || !field) {
@@ -285,16 +329,14 @@ export function planAcpElicitation(params: unknown): AcpElicitationPlan {
         reason: `bb cannot show the field "${name}"`,
       };
     }
-    planned.push({
-      name,
-      field,
-      question: questionFor(
-        name,
-        fieldSchema,
-        field,
-        planned.length === 0 ? message : undefined,
-      ),
-    });
+    fields.push({ name, schema: fieldSchema, field });
+  }
+  const planned = planQuestionFields(fields, message);
+  if (planned.length > USER_QUESTION_MAX_QUESTIONS) {
+    return {
+      kind: "unsupported",
+      reason: `the form has ${planned.length} fields and bb shows at most ${USER_QUESTION_MAX_QUESTIONS}`,
+    };
   }
 
   const payload = userQuestionPendingInteractionPayloadSchema.safeParse({
@@ -310,14 +352,35 @@ export function planAcpElicitation(params: unknown): AcpElicitationPlan {
     toResponse(resolution) {
       const content: Record<string, unknown> = {};
       for (const entry of planned) {
-        const decoded = decodeAnswer(
-          entry.field,
-          resolution.answers[entry.name],
-        );
-        if (!decoded) {
+        const answer = resolution.answers[entry.name];
+        const decoded = decodeAnswer(entry.field, answer);
+        const typed = answer?.freeText?.trim() ?? "";
+        if (entry.otherName === undefined) {
+          if (!decoded) {
+            return { action: "decline" };
+          }
+          content[entry.name] = decoded.value;
+          continue;
+        }
+        if (entry.field.kind === "typedChoice") {
+          if (decoded) {
+            content[entry.name] = decoded.value;
+          } else if (typed) {
+            content[entry.otherName] = typed;
+          } else {
+            return { action: "decline" };
+          }
+          continue;
+        }
+        if (!decoded && !typed) {
           return { action: "decline" };
         }
-        content[entry.name] = decoded.value;
+        if (decoded) {
+          content[entry.name] = decoded.value;
+        }
+        if (typed) {
+          content[entry.otherName] = typed;
+        }
       }
       return { action: "accept", content };
     },
